@@ -139,3 +139,6 @@ config.ini
 
 # Gradio cache
 gradio_cached_examples/
+
+# Secrets and API keys
+secrets.json

@@ -17,13 +17,32 @@ except ImportError:
     ANTHROPIC_AVAILABLE = False
     print("Note: anthropic library not installed. Install with: pip install anthropic")
 
+# Load API keys from secrets.json
+def load_secrets():
+    """Load API keys from secrets.json file."""
+    secrets_path = os.path.join(os.path.dirname(__file__), "secrets.json")
+    try:
+        with open(secrets_path, 'r') as f:
+            secrets = json.load(f)
+        return secrets
+    except FileNotFoundError:
+        print(f"Warning: secrets.json not found at {secrets_path}. Using environment variables or hardcoded keys as fallback.")
+        return {}
+    except json.JSONDecodeError as e:
+        print(f"Error parsing secrets.json: {e}. Using environment variables or hardcoded keys as fallback.")
+        return {}
+
+# Load secrets at startup
+SECRETS = load_secrets()
+
 # Configuration
 TEMP_DIR = "/tmp/video_transcribe"
 FFMPEG_PATH = "/opt/homebrew/bin/ffmpeg"
 JOURNAL_DIR = "/Users/mini/Obsidian/AutumnsGarden/Journal/2025 Auto"
 LM_STUDIO_ENDPOINT = "http://localhost:1234/v1/chat/completions"  # Fixed the double http://
 ANTHROPIC_MODEL = "claude-sonnet-4-20250514"  # Default Claude model
-ANTHROPIC_API_KEY = ""  # Removed exposed API key - configure in secrets.json or environment variable
+ANTHROPIC_API_KEY = SECRETS.get("anthropic_api_key", os.getenv("ANTHROPIC_API_KEY", ""))  # Load from secrets.json, fallback to env var
+OPENROUTER_API_KEY = SECRETS.get("openrouter_api_key", os.getenv("OPENROUTER_API_KEY", ""))  # Additional API key for OpenRouter if needed
 LOCAL_MODEL_TOKEN_LIMIT = 4096  # Token limit for local models before fallback
 
 # Prompt Caching Configuration
@@ -1025,9 +1044,12 @@ Remember: Be conservative with changes. When in doubt, preserve the original."""
                 gr.Markdown("### Anthropic API Settings")
                 gr.Markdown(f"**Model:** {ANTHROPIC_MODEL}")
                 if ANTHROPIC_API_KEY:
-                    gr.Markdown("✅ **API Key:** Configured in script")
+                    if "anthropic_api_key" in SECRETS:
+                        gr.Markdown("✅ **API Key:** Loaded from secrets.json")
+                    else:
+                        gr.Markdown("✅ **API Key:** Loaded from environment variable")
                 else:
-                    gr.Markdown("❌ **API Key:** Not set - configure ANTHROPIC_API_KEY in script")
+                    gr.Markdown("❌ **API Key:** Not found - configure in secrets.json or ANTHROPIC_API_KEY environment variable")
                 
                 # Prompt caching configuration
                 enable_caching = gr.Checkbox(
