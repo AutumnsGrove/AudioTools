@@ -23,8 +23,12 @@ FFMPEG_PATH = "/opt/homebrew/bin/ffmpeg"
 JOURNAL_DIR = "/Users/mini/Obsidian/AutumnsGarden/Journal/2025 Auto"
 LM_STUDIO_ENDPOINT = "http://localhost:1234/v1/chat/completions"  # Fixed the double http://
 ANTHROPIC_MODEL = "claude-sonnet-4-20250514"  # Default Claude model
-ANTHROPIC_API_KEY = "REMOVED_API_KEY"  # Set your Anthropic API key here (e.g., "sk-ant-...")
+ANTHROPIC_API_KEY = ""  # Removed exposed API key - configure in secrets.json or environment variable
 LOCAL_MODEL_TOKEN_LIMIT = 4096  # Token limit for local models before fallback
+
+# Prompt Caching Configuration
+ENABLE_PROMPT_CACHING = True  # Enable Anthropic prompt caching to reduce costs
+CACHE_LIFETIME_HOURS = 1  # Cache lifetime in hours (1 or 5 minute default)
 
 
 def estimate_tokens(text):
@@ -330,20 +334,50 @@ Transcript excerpt:"""
 
 
 def generate_title_anthropic(clean_transcript, title_prompt):
-    """Generate title using Anthropic API."""
+    """Generate title using Anthropic API with prompt caching for cost optimization."""
     if not ANTHROPIC_AVAILABLE or not ANTHROPIC_API_KEY:
         raise Exception("Anthropic API not available or key not set")
         
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     
-    response = client.messages.create(
-        model=ANTHROPIC_MODEL,
-        max_tokens=20,
-        temperature=0.65,
-        messages=[
-            {"role": "user", "content": f"{title_prompt}\n\n{clean_transcript}"}
-        ]
-    )
+    # Use prompt caching if enabled - separate cached prompt from variable content
+    if ENABLE_PROMPT_CACHING:
+        print(f"Using prompt caching for title generation request")
+        
+        # Configure cache headers if extended cache lifetime is desired
+        extra_headers = {}
+        if CACHE_LIFETIME_HOURS > 1:
+            extra_headers["anthropic-beta"] = "prompt-caching-2024-07-31"
+        
+        response = client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=20,
+            temperature=0.65,
+            extra_headers=extra_headers,
+            system=[
+                {
+                    "type": "text",
+                    "text": title_prompt,
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ],
+            messages=[
+                {
+                    "role": "user", 
+                    "content": f"Generate a title for this transcript excerpt:\n\n{clean_transcript}"
+                }
+            ]
+        )
+    else:
+        # Fallback to non-cached version
+        response = client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=20,
+            temperature=0.65,
+            messages=[
+                {"role": "user", "content": f"{title_prompt}\n\n{clean_transcript}"}
+            ]
+        )
     
     title = response.content[0].text.strip()
     # Clean and limit the title
@@ -435,21 +469,52 @@ def enhance_transcript_with_llm(
 
 
 def enhance_transcript_anthropic(transcript, enhancement_prompt):
-    """Enhance transcript using Anthropic API."""
+    """Enhance transcript using Anthropic API with prompt caching for cost optimization."""
     if not ANTHROPIC_AVAILABLE or not ANTHROPIC_API_KEY:
         raise Exception("Anthropic API not available or key not set")
         
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     
     print(f"Sending request to Anthropic...")
-    response = client.messages.create(
-        model=ANTHROPIC_MODEL,
-        max_tokens=8000,
-        temperature=0.6,
-        messages=[
-            {"role": "user", "content": f"{enhancement_prompt}\n\n{transcript}"}
-        ]
-    )
+    
+    # Use prompt caching if enabled - separate cached prompt from variable content
+    if ENABLE_PROMPT_CACHING:
+        print(f"Using prompt caching for enhancement request")
+        
+        # Configure cache headers if extended cache lifetime is desired
+        extra_headers = {}
+        if CACHE_LIFETIME_HOURS > 1:
+            extra_headers["anthropic-beta"] = "prompt-caching-2024-07-31"
+        
+        response = client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=8000,
+            temperature=0.6,
+            extra_headers=extra_headers,
+            system=[
+                {
+                    "type": "text",
+                    "text": enhancement_prompt,
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ],
+            messages=[
+                {
+                    "role": "user", 
+                    "content": f"Please enhance this transcript:\n\n{transcript}"
+                }
+            ]
+        )
+    else:
+        # Fallback to non-cached version
+        response = client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=8000,
+            temperature=0.6,
+            messages=[
+                {"role": "user", "content": f"{enhancement_prompt}\n\n{transcript}"}
+            ]
+        )
     
     enhanced_text = response.content[0].text
     
@@ -692,103 +757,111 @@ def process_videos(
     provider,
     lm_studio_endpoint,
     model_name,
+    enable_caching,
     progress=gr.Progress(),
 ):
     """Main processing function for multiple video files."""
+    global ENABLE_PROMPT_CACHING
     
-    print(f"\n=== Starting batch processing ===")
-    print(f"LLM Enhancement enabled: {enhance_with_llm}")
-    print(f"Provider: {provider}")
-    if provider == "local":
-        print(f"LM Studio endpoint: {lm_studio_endpoint}")
-        print(f"Model: {model_name}")
-    else:
-        print(f"Model: {ANTHROPIC_MODEL}")
+    # Temporarily override global caching setting with UI setting
+    original_caching_setting = ENABLE_PROMPT_CACHING
+    ENABLE_PROMPT_CACHING = enable_caching
+    
+    try:
+        print(f"\n=== Starting batch processing ===")
+        print(f"Prompt caching: {'enabled' if enable_caching else 'disabled'}")
+        print(f"LLM Enhancement enabled: {enhance_with_llm}")
+        print(f"Provider: {provider}")
+        if provider == "local":
+            print(f"LM Studio endpoint: {lm_studio_endpoint}")
+            print(f"Model: {model_name}")
+        else:
+            print(f"Model: {ANTHROPIC_MODEL}")
 
-    # Prepare file list from either file paths or uploaded files
-    files_to_process = []
+        # Prepare file list from either file paths or uploaded files
+        files_to_process = []
 
-    # Handle file paths input
-    if file_paths_input and file_paths_input.strip():
-        progress(0.0, desc="Parsing file paths...")
-        file_paths = parse_file_paths(file_paths_input)
-        
-        print(f"Parsed {len(file_paths)} file paths:")
-        for path in file_paths:
-            print(f"  - {path}")
-        
-        # Check all files exist first
-        missing_files = []
-        valid_files = []
-        
-        for file_path in file_paths:
-            if os.path.exists(file_path):
-                valid_files.append(file_path)
-            else:
-                missing_files.append(file_path)
-        
-        if missing_files:
-            return f"Files not found:\n" + "\n".join(f"- {path}" for path in missing_files), "", ""
-        
-        # Get recording times and sort by oldest to newest
-        progress(0.02, desc="Reading video metadata for chronological sorting...")
-        files_with_times = []
-        
-        for file_path in valid_files:
-            recording_time = get_video_recording_time(file_path)
-            files_with_times.append((file_path, recording_time))
-            print(f"File: {Path(file_path).name} - Recording time: {recording_time}")
-        
-        # Sort by recording time (oldest first)
-        files_with_times.sort(key=lambda x: x[1])
-        
-        print("\nProcessing order (oldest to newest):")
-        for i, (file_path, recording_time) in enumerate(files_with_times, 1):
-            print(f"  {i}. {Path(file_path).name} ({recording_time})")
-        
-        # Create mock file objects for compatibility
-        class MockFile:
-            def __init__(self, path, recording_time):
-                self.name = path
-                self.recording_time = recording_time
+        # Handle file paths input
+        if file_paths_input and file_paths_input.strip():
+            progress(0.0, desc="Parsing file paths...")
+            file_paths = parse_file_paths(file_paths_input)
+            
+            print(f"Parsed {len(file_paths)} file paths:")
+            for path in file_paths:
+                print(f"  - {path}")
+            
+            # Check all files exist first
+            missing_files = []
+            valid_files = []
+            
+            for file_path in file_paths:
+                if os.path.exists(file_path):
+                    valid_files.append(file_path)
+                else:
+                    missing_files.append(file_path)
+            
+            if missing_files:
+                return f"Files not found:\n" + "\n".join(f"- {path}" for path in missing_files), "", ""
+            
+            # Get recording times and sort by oldest to newest
+            progress(0.02, desc="Reading video metadata for chronological sorting...")
+            files_with_times = []
+            
+            for file_path in valid_files:
+                recording_time = get_video_recording_time(file_path)
+                files_with_times.append((file_path, recording_time))
+                print(f"File: {Path(file_path).name} - Recording time: {recording_time}")
+            
+            # Sort by recording time (oldest first)
+            files_with_times.sort(key=lambda x: x[1])
+            
+            print("\nProcessing order (oldest to newest):")
+            for i, (file_path, recording_time) in enumerate(files_with_times, 1):
+                print(f"  {i}. {Path(file_path).name} ({recording_time})")
+            
+            # Create mock file objects for compatibility
+            class MockFile:
+                def __init__(self, path, recording_time):
+                    self.name = path
+                    self.recording_time = recording_time
 
-        files_to_process = [MockFile(path, time) for path, time in files_with_times]
+            files_to_process = [MockFile(path, time) for path, time in files_with_times]
 
-    # Handle uploaded files
-    elif video_files and len(video_files) > 0:
-        progress(0.0, desc="Preparing uploaded files...")
-        
-        # For uploaded files, also sort by recording time
-        progress(0.02, desc="Reading metadata for uploaded files...")
-        files_with_times = []
-        
-        for video_file in video_files:
-            recording_time = get_video_recording_time(video_file.name)
-            files_with_times.append((video_file, recording_time))
-            print(f"Uploaded file: {Path(video_file.name).name} - Recording time: {recording_time}")
-        
-        # Sort by recording time (oldest first)
-        files_with_times.sort(key=lambda x: x[1])
-        
-        print("\nProcessing order for uploaded files (oldest to newest):")
-        for i, (video_file, recording_time) in enumerate(files_with_times, 1):
-            print(f"  {i}. {Path(video_file.name).name} ({recording_time})")
-        
-        files_to_process = [video_file for video_file, _ in files_with_times]
+        # Handle uploaded files
+        elif video_files and len(video_files) > 0:
+            progress(0.0, desc="Preparing uploaded files...")
+            
+            # For uploaded files, also sort by recording time
+            progress(0.02, desc="Reading metadata for uploaded files...")
+            files_with_times = []
+            
+            for video_file in video_files:
+                recording_time = get_video_recording_time(video_file.name)
+                files_with_times.append((video_file, recording_time))
+                print(f"Uploaded file: {Path(video_file.name).name} - Recording time: {recording_time}")
+            
+            # Sort by recording time (oldest first)
+            files_with_times.sort(key=lambda x: x[1])
+            
+            print("\nProcessing order for uploaded files (oldest to newest):")
+            for i, (video_file, recording_time) in enumerate(files_with_times, 1):
+                print(f"  {i}. {Path(video_file.name).name} ({recording_time})")
+            
+            files_to_process = [video_file for video_file, _ in files_with_times]
 
-    if not files_to_process:
-        return "Please provide video files via file paths or upload.", "", ""
+        if not files_to_process:
+            return "Please provide video files via file paths or upload.", "", ""
 
-    ensure_directories()
+        ensure_directories()
 
-    all_transcripts = []
-    all_journal_entries = []
-    all_diffs = []
-    total_files = len(files_to_process)
+        all_transcripts = []
+        all_journal_entries = []
+        all_diffs = []
+        total_files = len(files_to_process)
 
-    # Add header with summary
-    progress(0.05, desc="Creating summary header...")
-    summary = f"""# Video Transcription Results
+        # Add header with summary
+        progress(0.05, desc="Creating summary header...")
+        summary = f"""# Video Transcription Results
 **Total Files:** {total_files}
 **Processed:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 **Auto-save:** {'Enabled' if auto_save else 'Disabled'}
@@ -796,54 +869,58 @@ def process_videos(
 **Input Method:** {'File Paths' if file_paths_input and file_paths_input.strip() else 'File Upload'}
 
 """
-    all_transcripts.append(summary)
+        all_transcripts.append(summary)
 
-    # Process each file with detailed progress tracking
-    for i, video_file in enumerate(files_to_process):
-        file_progress_start = 0.1 + (i * 0.8 / total_files)
-        file_progress_end = 0.1 + ((i + 1) * 0.8 / total_files)
-        
-        video_name = Path(video_file.name).stem
-        
-        # Create a progress callback for this specific file
-        def file_progress_callback(step_description):
-            current_progress = file_progress_start + (file_progress_end - file_progress_start) * 0.5
-            progress(current_progress, desc=f"[{i+1}/{total_files}] {video_name}: {step_description}")
+        # Process each file with detailed progress tracking
+        for i, video_file in enumerate(files_to_process):
+            file_progress_start = 0.1 + (i * 0.8 / total_files)
+            file_progress_end = 0.1 + ((i + 1) * 0.8 / total_files)
+            
+            video_name = Path(video_file.name).stem
+            
+            # Create a progress callback for this specific file
+            def file_progress_callback(step_description):
+                current_progress = file_progress_start + (file_progress_end - file_progress_start) * 0.5
+                progress(current_progress, desc=f"[{i+1}/{total_files}] {video_name}: {step_description}")
 
-        progress(file_progress_start, desc=f"[{i+1}/{total_files}] Starting {video_name}")
+            progress(file_progress_start, desc=f"[{i+1}/{total_files}] Starting {video_name}")
 
-        transcript, journal_entry, diff_output, error = process_single_video(
-            video_file,
-            auto_save,
-            custom_journal_path,
-            enhance_with_llm,
-            enhancement_prompt,
-            provider,
-            lm_studio_endpoint,
-            model_name,
-            file_progress_callback,
-        )
-
-        all_transcripts.append(transcript)
-        if journal_entry:
-            all_journal_entries.append(journal_entry)
-        if diff_output:
-            all_diffs.append(
-                f"## {Path(video_file.name).stem}\n\n```diff\n{diff_output}\n```\n\n"
+            transcript, journal_entry, diff_output, error = process_single_video(
+                video_file,
+                auto_save,
+                custom_journal_path,
+                enhance_with_llm,
+                enhancement_prompt,
+                provider,
+                lm_studio_endpoint,
+                model_name,
+                file_progress_callback,
             )
 
-        progress(file_progress_end, desc=f"[{i+1}/{total_files}] Completed {video_name}")
+            all_transcripts.append(transcript)
+            if journal_entry:
+                all_journal_entries.append(journal_entry)
+            if diff_output:
+                all_diffs.append(
+                    f"## {Path(video_file.name).stem}\n\n```diff\n{diff_output}\n```\n\n"
+                )
 
-        # Clean up uploaded file copies only (not files from paths)
-        if video_files and len(video_files) > 0:  # Only if using uploaded files
-            try:
-                if os.path.exists(video_file.name) and "/tmp/" in video_file.name:
-                    os.remove(video_file.name)
-            except:
-                pass
+            progress(file_progress_end, desc=f"[{i+1}/{total_files}] Completed {video_name}")
 
-    progress(1.0, desc="All files processed successfully!")
-    return "".join(all_transcripts), "".join(all_journal_entries), "".join(all_diffs)
+            # Clean up uploaded file copies only (not files from paths)
+            if video_files and len(video_files) > 0:  # Only if using uploaded files
+                try:
+                    if os.path.exists(video_file.name) and "/tmp/" in video_file.name:
+                        os.remove(video_file.name)
+                except:
+                    pass
+
+        progress(1.0, desc="All files processed successfully!")
+        return "".join(all_transcripts), "".join(all_journal_entries), "".join(all_diffs)
+    
+    finally:
+        # Always restore original caching setting
+        ENABLE_PROMPT_CACHING = original_caching_setting
 
 
 def create_interface():
@@ -951,6 +1028,16 @@ Remember: Be conservative with changes. When in doubt, preserve the original."""
                     gr.Markdown("✅ **API Key:** Configured in script")
                 else:
                     gr.Markdown("❌ **API Key:** Not set - configure ANTHROPIC_API_KEY in script")
+                
+                # Prompt caching configuration
+                enable_caching = gr.Checkbox(
+                    value=ENABLE_PROMPT_CACHING,
+                    label="Enable Prompt Caching",
+                    info="Cache prompts to reduce API costs by up to 90% for repeated requests"
+                )
+                
+                if ENABLE_PROMPT_CACHING:
+                    gr.Markdown("💰 **Cost Optimization:** Caching enabled - prompts cached for reuse, significant savings expected")
 
             # Test Model Button and Output
             with gr.Row():
@@ -1046,6 +1133,7 @@ Remember: Be conservative with changes. When in doubt, preserve the original."""
                 provider,
                 lm_studio_endpoint,
                 model_name,
+                enable_caching,
             ],
             outputs=[transcript_output, journal_output, diff_output],
         )
@@ -1056,6 +1144,7 @@ Remember: Be conservative with changes. When in doubt, preserve the original."""
         - **Video Transcription**: Converts videos to text using parakeet-mlx
         - **Dual LLM Support**: Choose between local LM Studio or Anthropic Claude Sonnet
         - **LLM Enhancement**: Improves readability and generates titles using your chosen provider
+        - **Prompt Caching**: Anthropic prompt caching reduces API costs by up to 90% for repeated requests
         - **Model Testing**: Test your LLM connection before processing videos
         - **Header Format**: Clean header-based format instead of callout blocks for better Obsidian navigation
         - **Brief Titles**: Auto-generated descriptive titles (8 words max) for each transcript
@@ -1063,7 +1152,7 @@ Remember: Be conservative with changes. When in doubt, preserve the original."""
         - **Diff Viewing**: See exactly what changes the LLM made
         - **Auto-Journal**: Automatically saves enhanced transcripts to daily journals
         - **Batch Processing**: Handle multiple videos at once
-        - **Flexible Input**: Use file paths OR drag & drop upload
+        - **Flexible Input**: Use file paths OR drag & drop upload  
         - **Smart Path Parsing**: Supports both line-separated and space-separated file paths
         - **Chronological Processing**: Automatically sorts videos by recording time (oldest to newest)
         
