@@ -320,7 +320,7 @@ def generate_brief_title(transcript, provider, lm_studio_endpoint=None, model_na
         clean_transcript = transcript.strip()[:1000]  # First 1000 chars
         
         title_prompt = """Generate a brief, descriptive title for this transcript. Requirements:
-- Maximum 8 words
+- Maximum 10 words
 - Capture the main topic or theme
 - Be specific and informative
 - No quotation marks or special formatting
